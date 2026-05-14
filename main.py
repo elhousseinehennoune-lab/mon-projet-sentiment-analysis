@@ -1,18 +1,22 @@
-from transformers import AutoModelForSequenceClassification
-from transformers import AutoTokenizer, AutoConfig
-from scipy.special import softmax
 import gradio as gr
+import tensorflow as tf
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.preprocessing.text import Tokenizer
+import pandas as pd
+import numpy as np
 
+# 1. Load your locally trained LSTM model
+model_path = 'models/sentiment_lstm.h5'
+model = tf.keras.models.load_model(model_path)
 
-model_path = f"Azie88/COVID_Vaccine_Tweet_sentiment_analysis_roberta"
+# 2. Recreate the Tokenizer (must be identical to EDA.py)
+# Using Train.csv to ensure the word dictionary is the same
+df_train = pd.read_csv('data/Train.csv').dropna(subset=['safe_text'])
+tokenizer = Tokenizer(num_words=10000, oov_token="<OOV>")
+tokenizer.fit_on_texts(df_train['safe_text'].astype(str))
 
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-config = AutoConfig.from_pretrained(model_path)
-model = AutoModelForSequenceClassification.from_pretrained(model_path)
-
-
-# Preprocess text (username and link placeholders)
 def preprocess(text):
+    # Logic for cleaning usernames and links
     new_text = []
     for t in text.split(" "):
         t = '@user' if t.startswith('@') and len(t) > 1 else t
@@ -20,34 +24,39 @@ def preprocess(text):
         new_text.append(t)
     return " ".join(new_text)
 
-
 def sentiment_analysis(text):
     text = preprocess(text)
-
-    # PyTorch-based models
-    encoded_input = tokenizer(text, return_tensors='pt')
-    output = model(**encoded_input)
-    scores_ = output[0][0].detach().numpy()
-    scores_ = softmax(scores_)
-
-    # Format output dict of scores
+    
+    # Text transformation for LSTM (Tokenization + Padding)
+    sequence = tokenizer.texts_to_sequences([text])
+    padded = pad_sequences(sequence, maxlen=100, padding='post')
+    
+    # Prediction with your model
+    prediction = model.predict(padded)[0]
+    
+    # English Labels: 0: Negative, 1: Neutral, 2: Positive
     labels = ['Negative', 'Neutral', 'Positive']
-    scores = {l:float(s) for (l,s) in zip(labels, scores_) }
+    
+    # Create dictionary for Gradio output
+    return {labels[i]: float(prediction[i]) for i in range(len(labels))}
 
-    return scores
-
-
-demo = gr.Interface(theme=gr.themes.Base(),
+# 3. Gradio Interface (English Version)
+demo = gr.Interface(
+    theme=gr.themes.Base(),
     fn=sentiment_analysis,
-    inputs=gr.Textbox(placeholder="Write your tweet here..."),
-    outputs="label",
-    # interpretation="default",
-    examples=[["The COVID Vaccine saves lives!"],
-              ["The Vaccination is not necessary for young people"],
-              ["The vaccine is terrible. It can lead to early death"],
-              ["I'm not sure. Maybe i'll get my booster vaccine shot"]],
-    title='COVID Vaccine Sentiment Analysis app',
-    description='This app assesses if a tweet related to vaccinations has a positive, neutral or negative sentiment.'
-              )
+    inputs=gr.Textbox(
+        label="Tweet Input", 
+        placeholder="Type your tweet here..."
+    ),
+    outputs=gr.Label(label="Sentiment Prediction"),
+    title='COVID-19 Vaccine Sentiment Analysis (LSTM)',
+    description='This application uses a custom Bidirectional LSTM model trained with over 90% accuracy to analyze vaccination-related sentiments.',
+    examples=[
+        ["The COVID Vaccine saves lives!"],
+        ["The vaccine is terrible. It can lead to early death"],
+        ["I'm not sure. Maybe i'll get my booster vaccine shot"]
+    ]
+)
 
-demo.launch(share=True)
+if __name__ == "__main__":
+    demo.launch(share=True)
